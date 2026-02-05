@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# CLI wrapper for repo2docker-tool
+
+set -euo pipefail
+
+IMAGE_NAME="repo2docker-tool:latest"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Function to check if a path is a URL
+_is_url() {
+    local path="$1"
+    [[ "$path" =~ ^(https?|git):// ]] || [[ "$path" =~ ^git@ ]]
+}
+
+# Function to get repo name from URL
+get_repo_name() {
+    local url="$1"
+
+    # Remove trailing slash
+    url="${url%/}"
+
+    # Remove .git if present
+    url="${url%.git}"
+
+    # Extract last path segment
+    basename "$url"
+}
+
+usage() {
+    cat <<EOF
+Usage: $0 --input <repo_path> --output <output_dir> [OPTIONS]
+
+Convert a repository to a Docker image and save as tar (and optionally SIF).
+
+Required arguments:
+  -i, --input <repo_path>    Path to the repository to convert (local path or Git URL - GitHub, GitLab, etc.)
+  -o, --output <output_dir>  Path to the output directory
+
+Options:
+  --sif, --privileged         Also produce a .sif file
+  --image-tag-name <name>     Specify the name of the Docker image tag (default: repo2docker-<repo-name>:latest)
+  -h, --help                  Show this help message
+
+EOF
+}
+
+# Parse arguments
+REPO_PATH=""
+OUTPUT_DIR=""
+OUTPUT_NAME=""
+IMAGE_TAG_NAME=""
+IMAGE_TAG="repo2docker-image:latest"
+BUILD_IMAGE=false
+SIF_FLAG=""
+PRIVILEGED=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -i|--input)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --input requires a value" >&2
+                usage
+                exit 1
+            fi
+            REPO_PATH="$2"
+            shift 2
+            ;;
+        -o|--output)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --output requires a value" >&2
+                usage
+                exit 1
+            fi
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --sif|--privileged)
+            SIF_FLAG="--sif"
+            PRIVILEGED="--privileged"
+            shift
+            ;;
+        --image-tag-name)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --image-tag-name requires a value" >&2
+                usage
+                exit 1
+            fi
+            IMAGE_TAG_NAME="$2"
+            shift 2
+            ;;
+        -*)
+            echo "ERROR: Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            echo "ERROR: Unexpected argument: $1" >&2
+            echo "Use --input and --output to specify paths" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$REPO_PATH" ]]; then
+    echo "ERROR: --input is required" >&2
+    usage
+    exit 1
+fi
+
+if [[ -z "$OUTPUT_DIR" ]]; then
+    echo "ERROR: --output is required" >&2
+    usage
+    exit 1
+fi
+
+# Ensure output directory exists and resolve absolute path
+OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
+
+# Handle input: clone URLs on host, then treat everything as local
+REPO_PATH_ABS=""
+TEMP_CLONE_DIR=""
+
+if _is_url "$REPO_PATH"; then
+    # URL - clone to temporary directory on host
+    if ! command -v git >/dev/null 2>&1; then
+        echo "ERROR: git is not installed (required for cloning repositories)" >&2
+        exit 1
+    fi
+    
+    TEMP_CLONE_DIR="$(mktemp -d -t repo2docker-XXXXXX)"
+    echo "Cloning repository from $REPO_PATH..."
+    if ! git clone "$REPO_PATH" "$TEMP_CLONE_DIR"; then
+        echo "ERROR: Failed to clone repository from $REPO_PATH" >&2
+        rm -rf "$TEMP_CLONE_DIR"
+        exit 1
+    fi
+    REPO_PATH_ABS="$TEMP_CLONE_DIR"
+    
+    # Extract repo name from URL for output name
+    if [[ -z "$OUTPUT_NAME" ]]; then
+        OUTPUT_NAME="$(get_repo_name "$REPO_PATH")"
+    fi
+elif [[ -d "$REPO_PATH" ]]; then
+    # Local path - resolve absolute path
+    REPO_PATH_ABS="$(cd "$REPO_PATH" && pwd)"
+    # Auto-extract repo name from local path if not explicitly provided
+    if [[ -z "$OUTPUT_NAME" ]]; then
+        OUTPUT_NAME="$(basename "$REPO_PATH_ABS")"
+    fi
+    else
+        echo "ERROR: Input path is neither a valid directory nor a URL: $REPO_PATH" >&2
+        exit 1
+    fi
+
+# Set image tag: use provided --image-tag-name, or default to repo2docker-<repo-name>:latest
+if [[ -n "$IMAGE_TAG_NAME" ]]; then
+    IMAGE_TAG="$IMAGE_TAG_NAME"
+else
+    # Default to repo2docker-<repo-name>:latest
+    IMAGE_TAG="repo2docker-${OUTPUT_NAME}:latest"
+fi
+
+# Check Docker
+if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: Docker is not installed" >&2
+    exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: Docker daemon is not running" >&2
+    exit 1
+fi
+
+# Build command arguments for the container
+# All inputs (local or cloned) are copied to /work in the container
+CMD_ARGS=("/work")
+CMD_ARGS+=("--output" "/out")
+if [[ -n "$OUTPUT_NAME" ]]; then
+    CMD_ARGS+=("--name" "$OUTPUT_NAME")
+fi
+CMD_ARGS+=("--tag" "$IMAGE_TAG")
+if [[ -n "$SIF_FLAG" ]]; then
+    CMD_ARGS+=("$SIF_FLAG")
+fi
+
+# Run the container
+echo "Converting repository: $REPO_PATH"
+echo "Output directory: $OUTPUT_DIR"
+if [[ -n "$OUTPUT_NAME" ]]; then
+    echo "Output name: $OUTPUT_NAME"
+fi
+
+# Generate unique container name
+CONTAINER_NAME="repo2docker-$$-$(date +%s)"
+
+# Build docker create command array (creates container but doesn't start it)
+DOCKER_ARGS=("create" "--name" "$CONTAINER_NAME")
+if [[ -n "$PRIVILEGED" ]]; then
+    DOCKER_ARGS+=("--privileged")
+fi
+# Mount docker.sock for docker-in-docker
+DOCKER_ARGS+=(
+    "-v" "/var/run/docker.sock:/var/run/docker.sock"
+    "$IMAGE_NAME"
+)
+# Add command arguments (entrypoint will run main.py with these args)
+DOCKER_ARGS+=("${CMD_ARGS[@]}")
+
+# Create the container (doesn't start it yet)
+echo "Creating container..."
+docker "${DOCKER_ARGS[@]}" > /dev/null
+
+# Cleanup function to ensure container and temp directory are removed
+cleanup() {
+    docker rm -f "$CONTAINER_NAME" > /dev/null 2>&1 || true
+    if [[ -n "$TEMP_CLONE_DIR" ]] && [[ -d "$TEMP_CLONE_DIR" ]]; then
+        rm -rf "$TEMP_CLONE_DIR"
+    fi
+}
+trap cleanup EXIT
+
+# Copy repo into container before starting (always /work now)
+echo "Copying repository into container..."
+# Copy repo contents to /work (trailing /. copies contents, not the directory itself)
+docker cp "$REPO_PATH_ABS/." "$CONTAINER_NAME:/work"
+
+# Start the container and wait for it to complete (attached mode)
+echo "Running conversion..."
+docker start -a "$CONTAINER_NAME"
+
+# Copy output files back from container
+echo "Copying output files..."
+docker cp "$CONTAINER_NAME:/out/." "$OUTPUT_DIR/"
+
+echo ""
+echo "✓ Conversion complete! Output files in: $OUTPUT_DIR"
+

@@ -1,0 +1,33 @@
+# Build outputs
+out/
+*.tar
+*.sif
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+README.md
+TESTING.md
+
+# Other
+.python-version
+*.log
+

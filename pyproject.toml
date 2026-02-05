@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo2docker-tool"
+version = "1.0.0"
+description = "Barebones repo2docker tool"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "jupyter-repo2docker>=2025.12.0",
+]
