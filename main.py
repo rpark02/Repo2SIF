@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Barebones repo2docker tool: convert repo to Docker image, save as tar, optionally convert to SIF.
+"""Repo2SIF: convert repo to Docker image, save as tar, optionally convert to SIF.
 
-This tool is typically invoked from within a Docker container. The wrapper script (repo2docker)
+This tool is typically invoked from within a Docker container. The wrapper script (repo2sif)
 uses docker create/cp/start to:
 - Clone Git URLs (GitHub, GitLab, etc.) on the host, then copy to /work in the container
 - Copy local repos to /work in the container
@@ -18,7 +18,7 @@ import re
 
 
 DEFAULT_OUTDIR = Path("/out")
-DEFAULT_IMAGE_TAG = "repo2docker-image:latest"
+DEFAULT_IMAGE_TAG = "repo2sif-image:latest"
 
 
 def _is_url(path: str) -> bool:
@@ -59,7 +59,7 @@ def main():
     # Note: When invoked by the wrapper script, URLs are cloned on the host first,
     # then copied to /work. This URL handling is mainly for direct invocations.
     if _is_url(repo_path_str):
-        # URL - repo2docker will handle cloning (for direct invocations)
+        # URL - repo2sif will handle cloning (for direct invocations)
         repo_path = repo_path_str
     else:
         # Local path - validate it exists (could be /work if copied by wrapper, or a direct path)
@@ -78,7 +78,7 @@ def main():
     if args.name:
         output_name = args.name
         # Use output name for image tag to ensure uniqueness
-        image_tag = f"repo2docker-{output_name}:latest"
+        image_tag = f"repo2sif-{output_name}:latest"
     else:
         # Auto-generate name from repository path
         if _is_url(repo_path_str):
@@ -102,9 +102,9 @@ def main():
             output_name = "repo"
         
         # Use generated name for image tag to ensure uniqueness
-        image_tag = f"repo2docker-{output_name}:latest"
+        image_tag = f"repo2sif-{output_name}:latest"
     
-    # Build image using repo2docker CLI
+    # Build image using jupyter-repo2docker CLI
     print(f"Building Docker image from {repo_path}...")
     _run([
         "jupyter-repo2docker",
@@ -112,7 +112,7 @@ def main():
         "--image-name", image_tag,
         "--user-name", "r2d",
         "--user-id", "1000",
-        "--target-repo-dir", "/repo2docker_dir",
+        "--target-repo-dir", "/repo2sif_dir",
         repo_path,
     ])
     

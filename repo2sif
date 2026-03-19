@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# CLI wrapper for repo2docker-tool
+# CLI wrapper for Repo2SIF
 
 set -euo pipefail
 
-IMAGE_NAME="repo2docker-tool:latest"
+IMAGE_NAME="repo2sif:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Function to check if a path is a URL
@@ -38,7 +38,7 @@ Required arguments:
 
 Options:
   --sif, --privileged         Also produce a .sif file
-  --image-tag-name <name>     Specify the name of the Docker image tag (default: repo2docker-<repo-name>:latest)
+  --image-tag-name <name>     Specify the name of the Docker image tag (default: repo2sif-<repo-name>:latest)
   -h, --help                  Show this help message
 
 EOF
@@ -49,7 +49,7 @@ REPO_PATH=""
 OUTPUT_DIR=""
 OUTPUT_NAME=""
 IMAGE_TAG_NAME=""
-IMAGE_TAG="repo2docker-image:latest"
+IMAGE_TAG="repo2sif-image:latest"
 BUILD_IMAGE=false
 SIF_FLAG=""
 PRIVILEGED=""
@@ -133,7 +133,7 @@ if _is_url "$REPO_PATH"; then
         exit 1
     fi
     
-    TEMP_CLONE_DIR="$(mktemp -d -t repo2docker-XXXXXX)"
+    TEMP_CLONE_DIR="$(mktemp -d -t repo2sif-XXXXXX)"
     echo "Cloning repository from $REPO_PATH..."
     if ! git clone "$REPO_PATH" "$TEMP_CLONE_DIR"; then
         echo "ERROR: Failed to clone repository from $REPO_PATH" >&2
@@ -158,12 +158,12 @@ elif [[ -d "$REPO_PATH" ]]; then
         exit 1
     fi
 
-# Set image tag: use provided --image-tag-name, or default to repo2docker-<repo-name>:latest
+# Set image tag: use provided --image-tag-name, or default to repo2sif-<repo-name>:latest
 if [[ -n "$IMAGE_TAG_NAME" ]]; then
     IMAGE_TAG="$IMAGE_TAG_NAME"
 else
-    # Default to repo2docker-<repo-name>:latest
-    IMAGE_TAG="repo2docker-${OUTPUT_NAME}:latest"
+    # Default to repo2sif-<repo-name>:latest
+    IMAGE_TAG="repo2sif-${OUTPUT_NAME}:latest"
 fi
 
 # Check Docker
@@ -197,7 +197,7 @@ if [[ -n "$OUTPUT_NAME" ]]; then
 fi
 
 # Generate unique container name
-CONTAINER_NAME="repo2docker-$$-$(date +%s)"
+CONTAINER_NAME="repo2sif-$$-$(date +%s)"
 
 # Build docker create command array (creates container but doesn't start it)
 DOCKER_ARGS=("create" "--name" "$CONTAINER_NAME")
@@ -240,4 +240,3 @@ docker cp "$CONTAINER_NAME:/out/." "$OUTPUT_DIR/"
 
 echo ""
 echo "✓ Conversion complete! Output files in: $OUTPUT_DIR"
-

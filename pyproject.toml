@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "repo2docker-tool"
+name = "repo2sif"
 version = "1.0.0"
-description = "Barebones repo2docker tool"
+description = "Barebones Repo2SIF tool: convert repo to Docker image, save as tar/SIF"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
