@@ -5,6 +5,19 @@ set -euo pipefail
 
 IMAGE_NAME="repo2sif:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+START_TIME="$(date +%s)"
+
+log_info()  { echo "[INFO]  $(date +%H:%M:%S) $*"; }
+log_error() { echo "[ERROR] $(date +%H:%M:%S) $*" >&2; }
+
+fmt_elapsed() {
+    local secs=$1
+    local h=$((secs / 3600)) m=$(( (secs % 3600) / 60 )) s=$((secs % 60))
+    if (( h > 0 )); then printf "%dh %dm %ds" "$h" "$m" "$s"
+    elif (( m > 0 )); then printf "%dm %ds" "$m" "$s"
+    else printf "%ds" "$s"
+    fi
+}
 
 # Function to check if a path is a URL
 _is_url() {
@@ -39,6 +52,7 @@ Required arguments:
 Options:
   --sif, --privileged         Also produce a .sif file
   --image-tag-name <name>     Specify the name of the Docker image tag (default: repo2sif-<repo-name>:latest)
+  --build                     Force rebuild of the repo2sif Docker image
   -h, --help                  Show this help message
 
 EOF
@@ -62,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -i|--input)
             if [[ -z "${2:-}" ]]; then
-                echo "ERROR: --input requires a value" >&2
+                log_error "--input requires a value"
                 usage
                 exit 1
             fi
@@ -71,7 +85,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -o|--output)
             if [[ -z "${2:-}" ]]; then
-                echo "ERROR: --output requires a value" >&2
+                log_error "--output requires a value"
                 usage
                 exit 1
             fi
@@ -83,9 +97,13 @@ while [[ $# -gt 0 ]]; do
             PRIVILEGED="--privileged"
             shift
             ;;
+        --build)
+            BUILD_IMAGE=true
+            shift
+            ;;
         --image-tag-name)
             if [[ -z "${2:-}" ]]; then
-                echo "ERROR: --image-tag-name requires a value" >&2
+                log_error "--image-tag-name requires a value"
                 usage
                 exit 1
             fi
@@ -93,28 +111,44 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -*)
-            echo "ERROR: Unknown option: $1" >&2
+            log_error "Unknown option: $1"
             usage
             exit 1
             ;;
         *)
-            echo "ERROR: Unexpected argument: $1" >&2
-            echo "Use --input and --output to specify paths" >&2
+            log_error "Unexpected argument: $1 (use --input and --output to specify paths)"
             usage
             exit 1
             ;;
     esac
 done
 
+# Allow --build without --input/--output to just build the Docker image
+if [[ "$BUILD_IMAGE" == true ]] && [[ -z "$REPO_PATH" ]] && [[ -z "$OUTPUT_DIR" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "Docker is not installed"
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        log_error "Docker daemon is not running"
+        exit 1
+    fi
+    log_info "Building repo2sif Docker image..."
+    BUILD_START="$(date +%s)"
+    docker build --load -t "$IMAGE_NAME" --platform=linux/amd64 "$SCRIPT_DIR"
+    log_info "Docker image built in $(fmt_elapsed $(( $(date +%s) - BUILD_START )))"
+    exit 0
+fi
+
 # Validate required arguments
 if [[ -z "$REPO_PATH" ]]; then
-    echo "ERROR: --input is required" >&2
+    log_error "--input is required"
     usage
     exit 1
 fi
 
 if [[ -z "$OUTPUT_DIR" ]]; then
-    echo "ERROR: --output is required" >&2
+    log_error "--output is required"
     usage
     exit 1
 fi
@@ -129,14 +163,14 @@ TEMP_CLONE_DIR=""
 if _is_url "$REPO_PATH"; then
     # URL - clone to temporary directory on host
     if ! command -v git >/dev/null 2>&1; then
-        echo "ERROR: git is not installed (required for cloning repositories)" >&2
+        log_error "git is not installed (required for cloning repositories)"
         exit 1
     fi
     
     TEMP_CLONE_DIR="$(mktemp -d -t repo2sif-XXXXXX)"
-    echo "Cloning repository from $REPO_PATH..."
+    log_info "Cloning repository from $REPO_PATH..."
     if ! git clone "$REPO_PATH" "$TEMP_CLONE_DIR"; then
-        echo "ERROR: Failed to clone repository from $REPO_PATH" >&2
+        log_error "Failed to clone repository from $REPO_PATH"
         rm -rf "$TEMP_CLONE_DIR"
         exit 1
     fi
@@ -154,7 +188,7 @@ elif [[ -d "$REPO_PATH" ]]; then
         OUTPUT_NAME="$(basename "$REPO_PATH_ABS")"
     fi
     else
-        echo "ERROR: Input path is neither a valid directory nor a URL: $REPO_PATH" >&2
+        log_error "Input path is neither a valid directory nor a URL: $REPO_PATH"
         exit 1
     fi
 
@@ -162,19 +196,31 @@ elif [[ -d "$REPO_PATH" ]]; then
 if [[ -n "$IMAGE_TAG_NAME" ]]; then
     IMAGE_TAG="$IMAGE_TAG_NAME"
 else
-    # Default to repo2sif-<repo-name>:latest
-    IMAGE_TAG="repo2sif-${OUTPUT_NAME}:latest"
+    # Default to repo2sif-<repo-name>:latest (Docker requires lowercase)
+    IMAGE_TAG="repo2sif-$(echo "$OUTPUT_NAME" | tr '[:upper:]' '[:lower:]'):latest"
 fi
 
 # Check Docker
 if ! command -v docker >/dev/null 2>&1; then
-    echo "ERROR: Docker is not installed" >&2
+    log_error "Docker is not installed"
     exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
-    echo "ERROR: Docker daemon is not running" >&2
+    log_error "Docker daemon is not running"
     exit 1
+fi
+
+# Build the repo2sif image if it doesn't exist or --build was requested
+if [[ "$BUILD_IMAGE" == true ]] || ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    if [[ "$BUILD_IMAGE" == true ]]; then
+        log_info "Building repo2sif Docker image (forced rebuild)..."
+    else
+        log_info "repo2sif Docker image not found. Building (one-time setup)..."
+    fi
+    BUILD_START="$(date +%s)"
+    docker build --load -t "$IMAGE_NAME" --platform=linux/amd64 "$SCRIPT_DIR"
+    log_info "Docker image built in $(fmt_elapsed $(( $(date +%s) - BUILD_START )))"
 fi
 
 # Build command arguments for the container
@@ -189,11 +235,10 @@ if [[ -n "$SIF_FLAG" ]]; then
     CMD_ARGS+=("$SIF_FLAG")
 fi
 
-# Run the container
-echo "Converting repository: $REPO_PATH"
-echo "Output directory: $OUTPUT_DIR"
+log_info "Converting repository: $REPO_PATH"
+log_info "Output directory: $OUTPUT_DIR"
 if [[ -n "$OUTPUT_NAME" ]]; then
-    echo "Output name: $OUTPUT_NAME"
+    log_info "Output name: $OUTPUT_NAME"
 fi
 
 # Generate unique container name
@@ -213,7 +258,7 @@ DOCKER_ARGS+=(
 DOCKER_ARGS+=("${CMD_ARGS[@]}")
 
 # Create the container (doesn't start it yet)
-echo "Creating container..."
+log_info "Creating container..."
 docker "${DOCKER_ARGS[@]}" > /dev/null
 
 # Cleanup function to ensure container and temp directory are removed
@@ -226,17 +271,18 @@ cleanup() {
 trap cleanup EXIT
 
 # Copy repo into container before starting (always /work now)
-echo "Copying repository into container..."
-# Copy repo contents to /work (trailing /. copies contents, not the directory itself)
+log_info "Copying repository into container..."
 docker cp "$REPO_PATH_ABS/." "$CONTAINER_NAME:/work"
 
 # Start the container and wait for it to complete (attached mode)
-echo "Running conversion..."
+log_info "Running conversion..."
 docker start -a "$CONTAINER_NAME"
 
 # Copy output files back from container
-echo "Copying output files..."
+log_info "Copying output files..."
 docker cp "$CONTAINER_NAME:/out/." "$OUTPUT_DIR/"
 
+ELAPSED=$(( $(date +%s) - START_TIME ))
 echo ""
-echo "✓ Conversion complete! Output files in: $OUTPUT_DIR"
+log_info "Conversion complete! Output files in: $OUTPUT_DIR"
+log_info "Total time: $(fmt_elapsed $ELAPSED)"
